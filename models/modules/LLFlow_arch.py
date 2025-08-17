@@ -1,6 +1,3 @@
-
-
-
 import math
 import random
 
@@ -17,26 +14,23 @@ from models.modules.color_encoder import ColorEncoder
 from utils.util import opt_get
 from models.modules.flow import unsqueeze2d, squeeze2d
 from torch.cuda.amp import autocast
+from models.modules.RGB2HSV import RGB2HSV
+from models.modules.HSV2RGB import HSV2RGB
 
 class LLFlow(nn.Module):
     def __init__(self, in_nc, out_nc, nf, nb, gc=32, scale=4, K=None, opt=None, step=None):
         super(LLFlow, self).__init__()
         self.crop_size = opt['datasets']['train']['GT_size']
         self.opt = opt
-        self.quant = 255 if opt_get(opt, ['datasets', 'train', 'quant']) is \
-                            None else opt_get(opt, ['datasets', 'train', 'quant'])
-        if opt['cond_encoder'] == 'ConEncoder1':
-            self.RRDB = ConEncoder1(in_nc, out_nc, nf, nb, gc, scale, opt)
-        elif opt['cond_encoder'] ==  'NoEncoder':
-            self.RRDB = None # NoEncoder(in_nc, out_nc, nf, nb, gc, scale, opt)
-        elif opt['cond_encoder'] == 'RRDBNet':
-            # if self.opt['encode_color_map']: print('Warning: ''encode_color_map'' is not implemented in RRDBNet')
-            self.RRDB = RRDBNet(in_nc, out_nc, nf, nb, gc, scale, opt)
-        else:
-            print('WARNING: Cannot find the conditional encoder %s, select RRDBNet by default.' % opt['cond_encoder'])
-            # if self.opt['encode_color_map']: print('Warning: ''encode_color_map'' is not implemented in RRDBNet')
-            opt['cond_encoder'] = 'RRDBNet'
-            self.RRDB = RRDBNet(in_nc, out_nc, nf, nb, gc, scale, opt)
+        self.quant = 255 if opt_get(opt, ['datasets', 'train', 'quant']) is None else opt_get(opt, ['datasets', 'train', 'quant'])
+        # RGB encoder branch
+        self.rgb_encoder = ConEncoder1(in_nc, out_nc, nf, nb, gc, scale, opt)
+        # HSV encoder branch
+        self.rgb2hsv = RGB2HSV()
+        self.hsv_encoder = ConEncoder1(in_nc, out_nc, nf, nb, gc, scale, opt)
+        self.hsv2rgb = HSV2RGB()
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(out_nc, out_nc)  # adjust as needed
 
         if self.opt['encode_color_map']:
             self.color_map_encoder = ColorEncoder(nf=nf, opt=opt)
@@ -87,15 +81,35 @@ class LLFlow(nn.Module):
                 lr_enc=None,
                 add_gt_noise=False, step=None, y_label=None, align_condition_feature=False, get_color_map=False):
         if get_color_map:
-            color_lr = self.color_map_encoder(lr)
+            color_lr = self.rgb_encoder(lr)
             color_gt = nn.functional.avg_pool2d(gt, 11, 1, 5)
             color_gt = color_gt / torch.sum(color_gt, 1, keepdim=True)
             return color_lr, color_gt
         if not reverse:
-            if epses is not None and gt.device.index is not None:
-                epses = epses[gt.device.index]
-            return self.normal_flow(gt, lr, epses=epses, lr_enc=lr_enc, add_gt_noise=add_gt_noise, step=step,
+            # RGB branch
+            rgb_features = self.rgb_encoder(lr, get_steps=True)['fea_up2']
+            # HSV branch
+            hsv = self.rgb2hsv(lr)
+            hsv_features = self.hsv_encoder(hsv, get_steps=True)['fea_up2']
+            # Convert HSV features back to RGB
+            hsv_features_rgb = self.hsv2rgb(hsv_features)
+            # Fusion (concatenate along channel dimension)
+            fused_features = torch.cat([rgb_features, hsv_features_rgb], dim=1)
+            # Conditioning: average pooling + FC + multiply (as before)
+            pooled = self.avgpool(hsv_features)
+            pooled = pooled.view(pooled.size(0), -1)
+            cond_vec = self.fc(pooled)
+            conditioned_features = fused_features * cond_vec.unsqueeze(-1).unsqueeze(-1)
+            # Pass conditioned_features to the invertible network
+            output = self.normal_flow(gt, conditioned_features, epses=epses, lr_enc=lr_enc, add_gt_noise=add_gt_noise, step=step,
                                     y_onehot=y_label, align_condition_feature=align_condition_feature)
+            # Convert output from HSV back to RGB
+            if isinstance(output, tuple):
+                output_hsv = output[0]
+                output_rgb = self.hsv2rgb(output_hsv)
+                return (output_rgb,) + output[1:]
+            else:
+                return self.hsv2rgb(output)
         else:
             # assert lr.shape[0] == 1
             assert lr.shape[1] == 3 or lr.shape[1] == 6
