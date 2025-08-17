@@ -1,4 +1,4 @@
-# Ignore all image files in the entire project
+# Ignore all image and large files in the entire project
 **/*.png
 **/*.jpg
 **/*.jpeg
