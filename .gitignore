@@ -1,0 +1,10 @@
+# Ignore all image files in the entire project
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.bmp
+**/*.svg
+**/*.ipynb
+**/*.pth
+**/*.JPEG.png
