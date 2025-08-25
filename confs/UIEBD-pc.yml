@@ -37,7 +37,7 @@ datasets:
     use_flip: true
     color: RGB
     use_crop: true
-    GT_size: 160 # 192
+    GT_size: 160 
     noise_prob: 0
     noise_level: 5
     log_low: true
@@ -64,13 +64,13 @@ network_G:
   in_nc: 3
   out_nc: 3
   nf: 64
-  nb: 24 #  12 for our low light encoder, 23 for LLFlow
+  nb: 24 
   train_RRDB: false
   train_RRDB_delay: 0.5
 
   flow:
-    K: 12 # 24.49 psnr用的12 # 16
-    L: 3 # 4
+    K: 12 
+    L: 3 
     noInitialInj: true
     coupling: CondAffineSeparatedAndCond
     additionalFlowNoAffine: 2
